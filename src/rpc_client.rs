@@ -1,9 +1,9 @@
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
-use solana_transaction_status::{UiTransactionEncoding, EncodedTransaction, UiTransactionTokenBalance};
+use solana_transaction_status::{UiTransactionEncoding, EncodedTransaction, UiTransactionTokenBalance, option_serializer::OptionSerializer};
 use chrono::{Utc, Duration};
 use anyhow::{Result, Context};
-use spl_token::state::Account as TokenAccount;
+use std::str::FromStr;
 
 use crate::models::{USDCTransfer, TransferDirection, Config};
 
@@ -33,7 +33,7 @@ impl SolanaRpcClient {
         let start_time = end_time - Duration::days(days_to_index);
 
         // Create config for get_signatures_for_address
-        let config = solana_client::rpc_config::RpcGetSignaturesForAddressConfig {
+        let config = solana_client::rpc_config::RpcSignaturesForAddressConfig {
             before: None,
             until: None,
             limit: None,
@@ -74,10 +74,16 @@ impl SolanaRpcClient {
             };
 
             let message = transaction_data.message;
-            
+
             // Get token balances if they exist
-            let pre_token_balances = tx_meta.pre_token_balances.as_ref().unwrap_or(&vec![]);
-            let post_token_balances = tx_meta.post_token_balances.as_ref().unwrap_or(&vec![]);
+            let pre_token_balances = match tx_meta.pre_token_balances {
+                OptionSerializer::Some(balances) => balances,
+                _ => &vec![],
+            };
+            let post_token_balances = match tx_meta.post_token_balances {
+                OptionSerializer::Some(balances) => balances,
+                _ => &vec![],
+            };
 
             // Find USDC token accounts involved
             let usdc_accounts: Vec<_> = post_token_balances
@@ -93,7 +99,7 @@ impl SolanaRpcClient {
                     .map(|b| b.ui_token_amount.ui_amount)
                     .unwrap_or(Some(0.0))
                     .unwrap_or(0.0);
-                
+
                 let post_balance = balance.ui_token_amount.ui_amount.unwrap_or(0.0);
                 let amount = (post_balance - pre_balance).abs();
 
@@ -105,7 +111,6 @@ impl SolanaRpcClient {
                     };
 
                     let from = if direction == TransferDirection::Incoming {
-                        // Find the sender by looking at token account changes
                         pre_token_balances
                             .iter()
                             .find(|b| b.mint == usdc_mint_address.to_string())
@@ -118,7 +123,6 @@ impl SolanaRpcClient {
                     let to = if direction == TransferDirection::Incoming {
                         wallet_address.to_string()
                     } else {
-                        // Find the recipient by looking at token account changes
                         post_token_balances
                             .iter()
                             .find(|b| b.mint == usdc_mint_address.to_string() && b.owner != from)

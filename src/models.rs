@@ -12,7 +12,7 @@ pub struct USDCTransfer {
     pub direction: TransferDirection,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]  // Added PartialEq
 pub enum TransferDirection {
     Incoming,
     Outgoing,
@@ -24,4 +24,4 @@ pub struct Config {
     pub wallet_address: Pubkey,
     pub usdc_mint_address: Pubkey,
     pub days_to_index: i64,
-  }
+}

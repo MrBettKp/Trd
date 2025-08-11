@@ -1,6 +1,6 @@
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
-use solana_transaction_status::UiTransactionEncoding;
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
+use solana_transaction_status::{UiTransactionEncoding, EncodedTransaction, UiTransactionTokenBalance};
 use chrono::{Utc, Duration};
 use anyhow::{Result, Context};
 use spl_token::state::Account as TokenAccount;
@@ -32,12 +32,18 @@ impl SolanaRpcClient {
         let end_time = Utc::now();
         let start_time = end_time - Duration::days(days_to_index);
 
+        // Create config for get_signatures_for_address
+        let config = solana_client::rpc_config::RpcGetSignaturesForAddressConfig {
+            before: None,
+            until: None,
+            limit: None,
+            commitment: Some(self.client.commitment()),
+        };
+
         // Get all signatures for the wallet
-        let signatures = self.client.get_signatures_for_address(
+        let signatures = self.client.get_signatures_for_address_with_config(
             &wallet_address,
-            None,
-            None,
-            Some(solana_client::rpc_filter::RpcFilterType::DataSize(165)), // Token transfer data size
+            config,
         )?;
 
         let mut transfers = Vec::new();
@@ -49,93 +55,89 @@ impl SolanaRpcClient {
             });
 
             // Skip if outside our time range
-            if let Some(timestamp) = timestamp {
-                if timestamp < start_time {
-                    continue;
-                }
-            } else {
-                continue;
-            }
+            let timestamp = match timestamp {
+                Some(t) if t >= start_time => t,
+                _ => continue,
+            };
 
             // Get the full transaction
+            let sig = Signature::from_str(&signature_str)?;
             let tx = self.client.get_transaction(
-                &signature_str,
+                &sig,
                 UiTransactionEncoding::Json,
             )?;
 
             let tx_meta = tx.transaction.meta.context("No transaction metadata")?;
-            let message = tx.transaction.transaction.message();
+            let transaction_data = match tx.transaction.transaction {
+                EncodedTransaction::Json(tx_data) => tx_data,
+                _ => continue,
+            };
 
-            // Check if this is a token transfer
-            for (index, instruction) in message.instructions().iter().enumerate() {
-                let program_id = message.account_keys[instruction.program_id_index as usize];
+            let message = transaction_data.message;
+            
+            // Get token balances if they exist
+            let pre_token_balances = tx_meta.pre_token_balances.as_ref().unwrap_or(&vec![]);
+            let post_token_balances = tx_meta.post_token_balances.as_ref().unwrap_or(&vec![]);
+
+            // Find USDC token accounts involved
+            let usdc_accounts: Vec<_> = post_token_balances
+                .iter()
+                .filter(|b| b.mint == usdc_mint_address.to_string())
+                .collect();
+
+            for balance in usdc_accounts {
+                let account = balance.owner.parse::<Pubkey>()?;
+                let pre_balance = pre_token_balances
+                    .iter()
+                    .find(|b| b.owner == balance.owner && b.mint == balance.mint)
+                    .map(|b| b.ui_token_amount.ui_amount)
+                    .unwrap_or(Some(0.0))
+                    .unwrap_or(0.0);
                 
-                // Check if this is a token program instruction
-                if program_id == spl_token::id() {
-                    let pre_token_balances = &tx_meta.pre_token_balances;
-                    let post_token_balances = &tx_meta.post_token_balances;
+                let post_balance = balance.ui_token_amount.ui_amount.unwrap_or(0.0);
+                let amount = (post_balance - pre_balance).abs();
 
-                    // Find USDC token accounts involved
-                    let usdc_accounts: Vec<_> = post_token_balances
-                        .iter()
-                        .filter(|b| b.mint == usdc_mint_address.to_string())
-                        .collect();
+                if amount > 0.0 {
+                    let direction = if account == wallet_address {
+                        TransferDirection::Incoming
+                    } else {
+                        TransferDirection::Outgoing
+                    };
 
-                    for balance in usdc_accounts {
-                        let account = balance.owner.parse::<Pubkey>()?;
-                        let pre_balance = pre_token_balances
+                    let from = if direction == TransferDirection::Incoming {
+                        // Find the sender by looking at token account changes
+                        pre_token_balances
                             .iter()
-                            .find(|b| b.owner == balance.owner && b.mint == balance.mint)
-                            .map(|b| b.ui_token_amount.ui_amount)
-                            .unwrap_or(Some(0.0))
-                            .unwrap_or(0.0);
-                        
-                        let post_balance = balance.ui_token_amount.ui_amount.unwrap_or(0.0);
-                        let amount = (post_balance - pre_balance).abs();
+                            .find(|b| b.mint == usdc_mint_address.to_string())
+                            .map(|b| b.owner.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    } else {
+                        wallet_address.to_string()
+                    };
 
-                        if amount > 0.0 {
-                            let direction = if account == wallet_address {
-                                TransferDirection::Incoming
-                            } else {
-                                TransferDirection::Outgoing
-                            };
+                    let to = if direction == TransferDirection::Incoming {
+                        wallet_address.to_string()
+                    } else {
+                        // Find the recipient by looking at token account changes
+                        post_token_balances
+                            .iter()
+                            .find(|b| b.mint == usdc_mint_address.to_string() && b.owner != from)
+                            .map(|b| b.owner.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    };
 
-                            let from = if direction == TransferDirection::Incoming {
-                                // Find the sender by looking at token account changes
-                                pre_token_balances
-                                    .iter()
-                                    .find(|b| b.mint == usdc_mint_address.to_string())
-                                    .map(|b| b.owner.to_string())
-                                    .unwrap_or_else(|| "unknown".to_string())
-                            } else {
-                                wallet_address.to_string()
-                            };
-
-                            let to = if direction == TransferDirection::Incoming {
-                                wallet_address.to_string()
-                            } else {
-                                // Find the recipient by looking at token account changes
-                                post_token_balances
-                                    .iter()
-                                    .find(|b| b.mint == usdc_mint_address.to_string() && b.owner != from)
-                                    .map(|b| b.owner.to_string())
-                                    .unwrap_or_else(|| "unknown".to_string())
-                            };
-
-                            transfers.push(USDCTransfer {
-                                signature: signature_str.clone(),
-                                timestamp: timestamp,
-                                from,
-                                to,
-                                amount,
-                                direction,
-                            });
-                        }
-                    }
+                    transfers.push(USDCTransfer {
+                        signature: signature_str.clone(),
+                        timestamp,
+                        from,
+                        to,
+                        amount,
+                        direction,
+                    });
                 }
             }
         }
 
         Ok(transfers)
     }
-  }
+}

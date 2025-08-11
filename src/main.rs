@@ -3,7 +3,6 @@ mod config;
 mod rpc_client;
 
 use anyhow::Result;
-use chrono::Utc;
 use clap::Parser;
 use std::fs::File;
 use std::io::Write;
@@ -49,7 +48,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_summary(transfers: &[USDCTransfer], wallet_address: &str) {
+fn print_summary(transfers: &[USDCTransfer], _wallet_address: &str) {
     println!("\nUSDC Transfer Summary:");
     println!("{:<25} | {:<10} | {:<8} | {:<45} | {:<45}", 
         "Timestamp", "Amount", "Direction", "From", "To");

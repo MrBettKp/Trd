@@ -16,4 +16,5 @@ dotenv = "0.15"
 reqwest = { version = "0.11", features = ["json"] }
 anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
-spl-token = "3.5.0"
+# Remove if not used elsewhere
+# spl-token = "3.5.0"

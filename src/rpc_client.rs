@@ -33,11 +33,12 @@ impl SolanaRpcClient {
         let start_time = end_time - Duration::days(days_to_index);
 
         // Create config for get_signatures_for_address
-        let config = solana_client::rpc_config::RpcSignaturesForAddressConfig {
+        let config = solana_client::rpc_config::GetConfirmedSignaturesForAddress2Config {
             before: None,
             until: None,
             limit: None,
             commitment: Some(self.client.commitment()),
+            min_context_slot: None,
         };
 
         // Get all signatures for the wallet
@@ -78,11 +79,11 @@ impl SolanaRpcClient {
             // Get token balances if they exist
             let pre_token_balances = match tx_meta.pre_token_balances {
                 OptionSerializer::Some(balances) => balances,
-                _ => &vec![],
+                _ => vec![],
             };
             let post_token_balances = match tx_meta.post_token_balances {
                 OptionSerializer::Some(balances) => balances,
-                _ => &vec![],
+                _ => vec![],
             };
 
             // Find USDC token accounts involved
